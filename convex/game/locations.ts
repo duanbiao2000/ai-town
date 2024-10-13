@@ -6,6 +6,7 @@ import { Players } from './players';
 import { Doc, Id } from '../_generated/dataModel';
 import { HistoricalTable } from '../engine/historicalTable';
 
+// 定义locations表结构，包括位置、方向、速度和历史记录字段。
 export const locations = defineTable({
   // Position.
   x: v.number(),
@@ -22,10 +23,15 @@ export const locations = defineTable({
   history: v.optional(v.bytes()),
 });
 
+// 定义locationFields数组，用于存储locations表中的关键字段名。
 export const locationFields = ['x', 'y', 'dx', 'dy', 'velocity'];
+
+// Locations类继承自HistoricalTable，用于管理location相关的逻辑。
 export class Locations extends HistoricalTable<'locations'> {
+ // 将字符串 "locations" 作为常量来声明变量 table，以确保其值在程序中不会被意外修改
   table = 'locations' as const;
 
+  // 静态方法load用于从数据库中加载Locations实例。
   static async load(
     db: DatabaseWriter,
     engineId: Id<'engines'>,
@@ -43,6 +49,7 @@ export class Locations extends HistoricalTable<'locations'> {
     return new Locations(db, engineId, rows);
   }
 
+  // 构造函数初始化Locations实例。
   constructor(
     public db: DatabaseWriter,
     public engineId: Id<'engines'>,

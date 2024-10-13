@@ -15,6 +15,11 @@ export function useSendInput<Name extends keyof Inputs>(
     // The result's undefined if the query's loading and null if the input hasn't
     // been processed yet.
     if (result === undefined || result === null) {
+      /**
+     * Dispose是一个用于资源清理的可选函数引用
+     * 在不需要该资源时调用dispose函数可以进行清理操作
+     * 初始状态下，dispose未定义，表示没有清理操作关联
+     */
       let dispose: undefined | (() => void);
       try {
         await new Promise<void>((resolve, reject) => {

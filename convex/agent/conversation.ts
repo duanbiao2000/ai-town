@@ -1,157 +1,10 @@
-import { v } from 'convex/values';
-import { Doc, Id } from '../_generated/dataModel';
-import { ActionCtx, internalQuery } from '../_generated/server';
-import { LLMMessage, chatCompletion } from '../util/openai';
-import * as memory from './memory';
-import { api, internal } from '../_generated/api';
-import * as embeddingsCache from './embeddingsCache';
-
-const selfInternal = internal.agent.conversation;
-
-export async function startConversation(
-  ctx: ActionCtx,
-  conversationId: Id<'conversations'>,
-  playerId: Id<'players'>,
-  otherPlayerId: Id<'players'>,
-  lastConversationId: Id<'conversations'> | null,
-) {
-  const { player, otherPlayer, agent, otherAgent, lastConversation } = await ctx.runQuery(
-    selfInternal.queryPromptData,
-    {
-      playerId,
-      otherPlayerId,
-      conversationId,
-      lastConversationId,
-    },
-  );
-  const embedding = await embeddingsCache.fetch(
-    ctx,
-    `What do you think about ${otherPlayer.name}?`,
-  );
-  const memories = await memory.searchMemories(ctx, player, embedding, 3);
-  const memoryWithOtherPlayer = memories.find(
-    (m) => m.data.type === 'conversation' && m.data.playerIds.includes(otherPlayerId),
-  );
-  const prompt = [
-    `You are ${player.name}, and you just started a conversation with ${otherPlayer.name}.`,
-  ];
-  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent));
-  prompt.push(...previousConversationPrompt(otherPlayer, lastConversation));
-  prompt.push(...relatedMemoriesPrompt(otherPlayer, memories));
-  if (memoryWithOtherPlayer) {
-    prompt.push(
-      `Be sure to include some detail or question about a previous conversation in your greeting.`,
-    );
-  }
-  prompt.push(`${player.name}:`);
-
-  const { content } = await chatCompletion({
-    messages: [
-      {
-        role: 'user',
-        content: prompt.join('\n'),
-      },
-    ],
-    max_tokens: 300,
-    stream: true,
-    stop: stopWords(otherPlayer, player),
-  });
-  return content;
-}
-
-export async function continueConversation(
-  ctx: ActionCtx,
-  conversationId: Id<'conversations'>,
-  playerId: Id<'players'>,
-  otherPlayerId: Id<'players'>,
-  lastConversationId: Id<'conversations'> | null,
-) {
-  const { player, otherPlayer, conversation, agent, otherAgent } = await ctx.runQuery(
-    selfInternal.queryPromptData,
-    {
-      playerId,
-      otherPlayerId,
-      conversationId,
-      lastConversationId,
-    },
-  );
-  const now = Date.now();
-  const started = new Date(conversation._creationTime);
-  const embedding = await embeddingsCache.fetch(
-    ctx,
-    `What do you think about ${otherPlayer.name}?`,
-  );
-  const memories = await memory.searchMemories(ctx, player, embedding, 3);
-  const prompt = [
-    `You are ${player.name}, and you're currently in a conversation with ${otherPlayer.name}.`,
-    `The conversation started at ${started.toLocaleString()}. It's now ${now.toLocaleString()}.`,
-  ];
-  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent));
-  prompt.push(...relatedMemoriesPrompt(otherPlayer, memories));
-  prompt.push(
-    `Below is the current chat history between you and ${otherPlayer.name}.`,
-    `DO NOT greet them again. Do NOT use the word "Hey" too often. Your response should be brief and within 200 characters.`,
-  );
-
-  const llmMessages: LLMMessage[] = [
-    {
-      role: 'user',
-      content: prompt.join('\n'),
-    },
-    ...(await previousMessages(ctx, player, otherPlayer, conversation._id)),
-  ];
-  llmMessages.push({ role: 'user', content: `${player.name}:` });
-  const { content } = await chatCompletion({
-    messages: llmMessages,
-    max_tokens: 300,
-    stream: true,
-    stop: stopWords(otherPlayer, player),
-  });
-  return content;
-}
-
-export async function leaveConversation(
-  ctx: ActionCtx,
-  conversationId: Id<'conversations'>,
-  playerId: Id<'players'>,
-  otherPlayerId: Id<'players'>,
-  lastConversationId: Id<'conversations'> | null,
-) {
-  const { player, otherPlayer, conversation, agent, otherAgent } = await ctx.runQuery(
-    selfInternal.queryPromptData,
-    {
-      playerId,
-      otherPlayerId,
-      conversationId,
-      lastConversationId,
-    },
-  );
-  const prompt = [
-    `You are ${player.name}, and you're currently in a conversation with ${otherPlayer.name}.`,
-    `You've decided to leave the question and would like to politely tell them you're leaving the conversation.`,
-  ];
-  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent));
-  prompt.push(
-    `Below is the current chat history between you and ${otherPlayer.name}.`,
-    `How would you like to tell them that you're leaving? Your response should be brief and within 200 characters.`,
-  );
-  const llmMessages: LLMMessage[] = [
-    {
-      role: 'user',
-      content: prompt.join('\n'),
-    },
-    ...(await previousMessages(ctx, player, otherPlayer, conversation._id)),
-  ];
-  llmMessages.push({ role: 'user', content: `${player.name}:` });
-  const { content } = await chatCompletion({
-    messages: llmMessages,
-    max_tokens: 300,
-    stream: true,
-    stop: stopWords(otherPlayer, player),
-  });
-  return content;
-}
-
+/**
+ * 根据玩家和其他代理的信息生成当前玩家代理的提示信息。
+ * @param otherPlayer 另一个玩家的信息
+ * @param agent 当前玩家的代理信息，可能为null
+ * @param otherAgent 另一个玩家的代理信息，可能为null
+ * @returns 返回一个字符串数组，包含生成的提示信息
+ */
 function agentPrompts(
   otherPlayer: Doc<'players'>,
   agent: Doc<'agents'> | null,
@@ -159,15 +12,21 @@ function agentPrompts(
 ): string[] {
   const prompt = [];
   if (agent) {
-    prompt.push(`About you: ${agent.identity}`);
-    prompt.push(`Your goals for the conversation: ${agent.plan}`);
+    prompt.push(`关于你: ${agent.identity}`);
+    prompt.push(`你在这次对话中的目标: ${agent.plan}`);
   }
   if (otherAgent) {
-    prompt.push(`About ${otherPlayer.name}: ${otherAgent.identity}`);
+    prompt.push(`关于${otherPlayer.name}: ${otherAgent.identity}`);
   }
   return prompt;
 }
 
+/**
+ * 生成关于两个玩家之间上次对话的提示信息，如果存在的话。
+ * @param otherPlayer 另一个玩家的信息
+ * @param conversation 上次对话的信息，可能为null
+ * @returns 返回一个字符串数组，包含生成的提示信息
+ */
 function previousConversationPrompt(
   otherPlayer: Doc<'players'>,
   conversation: Doc<'conversations'> | null,
@@ -177,18 +36,22 @@ function previousConversationPrompt(
     const prev = new Date(conversation._creationTime);
     const now = new Date();
     prompt.push(
-      `Last time you chatted with ${
-        otherPlayer.name
-      } it was ${prev.toLocaleString()}. It's now ${now.toLocaleString()}.`,
+      `上一次与${otherPlayer.name}聊天是在${prev.toLocaleString()}。现在是${now.toLocaleString()}`,
     );
   }
   return prompt;
 }
 
+/**
+ * 根据相关记忆生成提示信息。
+ * @param otherPlayer 另一个玩家的信息
+ * @param memories 相关的记忆列表
+ * @returns 返回一个字符串数组，包含生成的提示信息
+ */
 function relatedMemoriesPrompt(otherPlayer: Doc<'players'>, memories: memory.Memory[]): string[] {
   const prompt = [];
   if (memories.length > 0) {
-    prompt.push(`Here are some related memories in decreasing relevance order:`);
+    prompt.push(`以下是按相关性递减顺序排列的一些相关记忆:`);
     for (const memory of memories) {
       prompt.push(' - ' + memory.description);
     }
@@ -196,6 +59,14 @@ function relatedMemoriesPrompt(otherPlayer: Doc<'players'>, memories: memory.Mem
   return prompt;
 }
 
+/**
+ * 异步获取之前的消息记录，并转换成LLMMessage格式。
+ * @param ctx 上下文环境
+ * @param player 当前玩家的信息
+ * @param otherPlayer 另一个玩家的信息
+ * @param conversationId 对话ID
+ * @returns 返回一个LLMMessage数组，包含之前的消息记录
+ */
 async function previousMessages(
   ctx: ActionCtx,
   player: Doc<'players'>,
@@ -215,12 +86,19 @@ async function previousMessages(
   return llmMessages;
 }
 
+/**
+ * 查询并返回与对话相关的玩家信息。
+ * @param playerId 当前玩家ID
+ * @param otherPlayerId 另一个玩家ID
+ * @param conversationId 对话ID
+ * @param lastConversationId 最后一次对话ID，可选
+ * @returns 返回一个对象，包含玩家、另一个玩家、对话、代理等相关信息
+ */
 export const queryPromptData = internalQuery({
   args: {
     playerId: v.id('players'),
     otherPlayerId: v.id('players'),
     conversationId: v.id('conversations'),
-
     lastConversationId: v.union(v.id('conversations'), v.null()),
   },
   handler: async (ctx, args) => {
@@ -258,6 +136,13 @@ export const queryPromptData = internalQuery({
   },
 });
 
+/**
+ * 查询并返回之前的对话记录。
+ * @param conversationId 当前对话ID
+ * @param playerId 当前玩家ID
+ * @param otherPlayerId 另一个玩家ID
+ * @returns 返回一个对话对象或null，表示之前的对话记录
+ */
 export const previousConversation = internalQuery({
   args: {
     conversationId: v.id('conversations'),
@@ -293,8 +178,14 @@ export const previousConversation = internalQuery({
   },
 });
 
+/**
+ * 生成LLM停止词，用于控制LLM在特定词汇出现时停止生成文本。
+ * @param otherPlayer 另一个玩家的信息
+ * @param player 当前玩家的信息
+ * @returns 返回一个字符串数组，包含停止词
+ */
 function stopWords(otherPlayer: Doc<'players'>, player: Doc<'players'>) {
-  // These are the words we ask the LLM to stop on. OpenAI only supports 4.
+  // 这些是要求LLM停止的词汇。OpenAI只支持4个停止词。
   const variants = [otherPlayer.name, `${otherPlayer.name} to ${player.name}`];
   return variants.flatMap((stop) => [stop + ':', stop.toLowerCase() + ':']);
 }

@@ -148,10 +148,25 @@ const checkForAPIKey = () => {
 };
 
 // Retry after this much time, based on the retry number.
-const RETRY_BACKOFF = [1000, 10_000, 20_000]; // In ms
-const RETRY_JITTER = 100; // In ms
+// 定义重试操作的延迟时间数组，单位为毫秒
+// 每次重试之间的间隔时间依次为1000ms、10000ms和20000ms
+const RETRY_BACKOFF = [1000, 10_000, 20_000]; 
+
+// 定义重试操作的随机抖动范围，单位为毫秒
+// 在每次重试时，会在重试延迟的基础上添加0到100ms之间的随机抖动，以避免重试风暴
+const RETRY_JITTER = 100; 
 type RetryError = { retry: boolean; error: any };
 
+/**
+ * 采用退避策略进行重试的异步函数
+ * 
+ * @param fn 要重试的异步函数，返回一个 Promise 对象
+ * @returns 返回一个包含重试次数、结果和耗时的对象
+ * 
+ * 此函数会尝试执行传入的异步函数，并在遇到错误时根据退避策略进行重试
+ * 退避策略通过 RETRY_BACKOFF 全局变量定义，每次重试的等待时间会逐渐增加
+ * 如果函数成功执行，返回包含重试信息和结果的对象如果执行过程中出现不可重试的错误，则会抛出错误
+ */
 export async function retryWithBackoff<T>(
   fn: () => Promise<T>,
 ): Promise<{ retries: number; result: T; ms: number }> {
@@ -161,11 +176,14 @@ export async function retryWithBackoff<T>(
       const start = Date.now();
       const result = await fn();
       const ms = Date.now() - start;
+      // 如果函数成功执行，返回包含重试次数、结果和耗时的对象
       return { result, retries: i, ms };
     } catch (e) {
       const retryError = e as RetryError;
+      // 在达到最大重试次数前，根据错误类型决定是否进行重试
       if (i < RETRY_BACKOFF.length) {
         if (retryError.retry) {
+          // 如果需要重试，则输出等待时间并执行重试
           console.log(
             `Attempt ${i + 1} failed, waiting ${RETRY_BACKOFF[i]}ms to retry...`,
             Date.now(),
@@ -176,10 +194,12 @@ export async function retryWithBackoff<T>(
           continue;
         }
       }
+      // 如果错误不需要重试或已达到最大重试次数，则抛出错误
       if (retryError.error) throw retryError.error;
       else throw e;
     }
   }
+  // 理论上不应达到此处，如果达到则抛出异常
   throw new Error('Unreachable');
 }
 
